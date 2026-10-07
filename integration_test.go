@@ -17,24 +17,24 @@ func extensionsRepoRoot(t *testing.T) string {
 	return filepath.Join("..", "extensions")
 }
 
-// fileLoaderFor maps published identifier URIs to their file on disk in a
+// fileLoaderFor maps published extension releases to their file on disk in a
 // checkout of the extensions repo, per the table in that repo's README.
 // This is the resolver's real fetch path with the network swapped for a
 // local checkout - no fake documents, no mocked schema shapes.
 func fileLoaderFor(t *testing.T, root string) LoaderFunc {
 	t.Helper()
-	uriToPath := map[string]string{
-		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/aws-s3/0.1.0/runtimeconditions.extension.yaml":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
+	referenceToPath := map[ExtensionReference]string{
+		{ID: "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml", Version: "v1alpha1"}: "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
+		{ID: "https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml", Version: "v1alpha1"}:   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
+		{ID: "https://runtimeconditions.io/extensions/aws/s3/0.1.0/runtimeconditions.extension.yaml", Version: "0.1.0"}:                    "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
 	}
-	docs := make(map[string][]byte)
-	for uri, relPath := range uriToPath {
+	docs := make(map[ExtensionReference][]byte)
+	for reference, relPath := range referenceToPath {
 		data, err := os.ReadFile(filepath.Join(root, relPath))
 		if err != nil {
 			t.Skipf("extensions repo not available at %s (%v); skipping integration test", root, err)
 		}
-		docs[uri] = data
+		docs[reference] = data
 	}
 	return NewInMemoryLoader(docs)
 }
@@ -44,7 +44,7 @@ func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 	loader := fileLoaderFor(t, root)
 
 	r := NewResolver(loader)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml")
+	g, err := r.Resolve(ExtensionReference{ID: "https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml", Version: "v1alpha1"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestIntegration_ResolveIndependentExtensionNoConflict(t *testing.T) {
 	loader := fileLoaderFor(t, root)
 
 	r := NewResolver(loader)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/aws-s3/0.1.0/runtimeconditions.extension.yaml")
+	g, err := r.Resolve(ExtensionReference{ID: "https://runtimeconditions.io/extensions/aws/s3/0.1.0/runtimeconditions.extension.yaml", Version: "0.1.0"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

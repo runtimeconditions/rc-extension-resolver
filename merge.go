@@ -11,8 +11,8 @@ type interfaceTypeKey struct {
 }
 
 type schemaEntry struct {
-	def      SchemaDef
-	ownerURI string
+	def   SchemaDef
+	owner ExtensionReference
 }
 
 // Schema binding is additive, not owned: env-configuration binds a schema
@@ -26,9 +26,9 @@ type schemaEntry struct {
 // in extension resolution order, so a Condition can disambiguate with an
 // explicit extension field, or fall back to the first owner.
 type Catalog struct {
-	kindOwners map[string][]string
-	typeOwner  map[interfaceTypeKey]string
-	schemaIDs  map[string]string
+	kindOwners map[string][]ExtensionReference
+	typeOwner  map[interfaceTypeKey]ExtensionReference
+	schemaIDs  map[string]ExtensionReference
 	schemas    map[interfaceTypeKey][]schemaEntry
 	compiled   map[string]*compiledSchema
 	compileMu  sync.Mutex
@@ -36,15 +36,15 @@ type Catalog struct {
 
 func Merge(graph *ResolvedGraph) (*Catalog, error) {
 	c := &Catalog{
-		kindOwners: make(map[string][]string),
-		typeOwner:  make(map[interfaceTypeKey]string),
-		schemaIDs:  make(map[string]string),
+		kindOwners: make(map[string][]ExtensionReference),
+		typeOwner:  make(map[interfaceTypeKey]ExtensionReference),
+		schemaIDs:  make(map[string]ExtensionReference),
 		schemas:    make(map[interfaceTypeKey][]schemaEntry),
 		compiled:   make(map[string]*compiledSchema),
 	}
 
 	for _, ext := range graph.Extensions {
-		owner := ext.Metadata.ID
+		owner := ext.Metadata.Reference()
 
 		for _, k := range ext.Spec.Kinds {
 			c.kindOwners[k.Name] = append(c.kindOwners[k.Name], owner)
@@ -53,19 +53,19 @@ func Merge(graph *ResolvedGraph) (*Catalog, error) {
 		for _, it := range ext.Spec.InterfaceTypes {
 			key := interfaceTypeKey{kind: it.TargetKind, typ: it.Name}
 			if existing, ok := c.typeOwner[key]; ok && existing != owner {
-				return nil, &ConflictError{Kind: it.TargetKind, InterfaceType: it.Name, DeclaredBy: []string{existing, owner}}
+				return nil, &ConflictError{Kind: it.TargetKind, InterfaceType: it.Name, DeclaredBy: []ExtensionReference{existing, owner}}
 			}
 			c.typeOwner[key] = owner
 		}
 
 		for _, s := range ext.Spec.Schemas {
 			if existing, ok := c.schemaIDs[s.ID]; ok && existing != owner {
-				return nil, &ConflictError{Kind: s.AppliesToKind, InterfaceType: s.AppliesToInterfaceType, DeclaredBy: []string{existing, owner}}
+				return nil, &ConflictError{Kind: s.AppliesToKind, InterfaceType: s.AppliesToInterfaceType, DeclaredBy: []ExtensionReference{existing, owner}}
 			}
 			c.schemaIDs[s.ID] = owner
 
 			key := interfaceTypeKey{kind: s.AppliesToKind, typ: s.AppliesToInterfaceType}
-			c.schemas[key] = append(c.schemas[key], schemaEntry{def: s, ownerURI: owner})
+			c.schemas[key] = append(c.schemas[key], schemaEntry{def: s, owner: owner})
 		}
 	}
 
@@ -80,18 +80,18 @@ func (c *Catalog) IsValidKind(kind string) bool {
 // With extension set, it must be one of kind's owners. Without it, the
 // first owner in extension resolution order wins, and match reports
 // whether that pick was explicit or a fallback.
-func (c *Catalog) resolveKind(kind, extension string) (owner string, match KindMatch, err error) {
+func (c *Catalog) resolveKind(kind string, extension *ExtensionReference) (owner ExtensionReference, match KindMatch, err error) {
 	owners := c.kindOwners[kind]
 	if len(owners) == 0 {
-		return "", "", fmt.Errorf("unknown kind %q", kind)
+		return ExtensionReference{}, "", fmt.Errorf("unknown kind %q", kind)
 	}
-	if extension != "" {
+	if extension != nil {
 		for _, o := range owners {
-			if o == extension {
+			if o == *extension {
 				return o, KindMatchExplicit, nil
 			}
 		}
-		return "", "", &ExtensionMismatchError{Kind: kind, Extension: extension}
+		return ExtensionReference{}, "", &ExtensionMismatchError{Kind: kind, Extension: *extension}
 	}
 	if len(owners) > 1 {
 		return owners[0], KindMatchFallback, nil
@@ -108,8 +108,8 @@ func (c *Catalog) schemasFor(kind, interfaceType string) []schemaEntry {
 	return c.schemas[interfaceTypeKey{kind: kind, typ: interfaceType}]
 }
 
-func LoadAndMerge(loader LoaderFunc, rootURI string) (*Catalog, error) {
-	graph, err := NewResolver(loader).Resolve(rootURI)
+func LoadAndMerge(loader LoaderFunc, root ExtensionReference) (*Catalog, error) {
+	graph, err := NewResolver(loader).Resolve(root)
 	if err != nil {
 		return nil, err
 	}

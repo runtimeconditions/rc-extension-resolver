@@ -6,12 +6,18 @@ import (
 )
 
 const (
-	uriA = "mem://a.extension.yaml"
-	uriB = "mem://b.extension.yaml"
-	uriC = "mem://c.extension.yaml"
+	idA = "example.a"
+	idB = "mem://b.extension.yaml"
+	idC = "mem://c.extension.yaml"
 )
 
-func mustResolve(t *testing.T, docs map[string][]byte, root string) *ResolvedGraph {
+var (
+	refA = ExtensionReference{ID: idA, Version: "v1alpha1"}
+	refB = ExtensionReference{ID: idB, Version: "v1alpha1"}
+	refC = ExtensionReference{ID: idC, Version: "v1alpha1"}
+)
+
+func mustResolve(t *testing.T, docs map[ExtensionReference][]byte, root ExtensionReference) *ResolvedGraph {
 	t.Helper()
 	r := NewResolver(NewInMemoryLoader(docs))
 	g, err := r.Resolve(root)
@@ -22,109 +28,115 @@ func mustResolve(t *testing.T, docs map[string][]byte, root string) *ResolvedGra
 }
 
 func TestResolve_SingleExtensionNoDependencies(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
 apiVersion: runtimeconditions.io/v1alpha1
 kind: RuntimeConditionsExtensionDefinition
 metadata:
-  id: ` + uriA + `
+  id: ` + idA + `
+  version: v1alpha1
 spec:
   kinds:
     - name: widget
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	if len(g.Extensions) != 1 {
 		t.Fatalf("expected 1 extension, got %d", len(g.Extensions))
 	}
-	if g.ByID[uriA] == nil {
-		t.Fatalf("expected %s in ByID", uriA)
+	if g.ByID[refA] == nil {
+		t.Fatalf("expected %s in ByID", idA)
 	}
 }
 
 func TestResolve_TransitiveDependenciesInTopologicalOrder(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
 metadata:
-  id: ` + uriA + `
+  id: ` + idA + `
+  version: v1alpha1
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: a}]
 `),
-		uriB: []byte(`
+		refB: []byte(`
 metadata:
-  id: ` + uriB + `
+  id: ` + idB + `
+  version: v1alpha1
 spec:
-  dependencies: [` + uriC + `]
+  dependencies: [{id: ` + idC + `, version: v1alpha1}]
   kinds: [{name: b}]
 `),
-		uriC: []byte(`
+		refC: []byte(`
 metadata:
-  id: ` + uriC + `
+  id: ` + idC + `
+  version: v1alpha1
 spec:
   kinds: [{name: c}]
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	if len(g.Extensions) != 3 {
 		t.Fatalf("expected 3 extensions, got %d", len(g.Extensions))
 	}
 	// dependency-first: c before b before a
-	order := map[string]int{}
+	order := map[ExtensionReference]int{}
 	for i, ext := range g.Extensions {
-		order[ext.Metadata.ID] = i
+		order[ext.Metadata.Reference()] = i
 	}
-	if !(order[uriC] < order[uriB] && order[uriB] < order[uriA]) {
+	if !(order[refC] < order[refB] && order[refB] < order[refA]) {
 		t.Fatalf("expected topological order c,b,a; got order %v", order)
 	}
 }
 
 func TestResolve_DiamondDependencyFetchedOnce(t *testing.T) {
-	// a depends on b and c, both of which depend on d.
-	uriD := "mem://d.extension.yaml"
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	// Two releases of a share d through a diamond, without forming a cycle.
+	refB := ExtensionReference{ID: idA, Version: "v2"}
+	idD := "mem://d.extension.yaml"
+	refD := ExtensionReference{ID: idD, Version: "v1alpha1"}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `, ` + uriC + `]
+  dependencies: [{id: ` + idA + `, version: v2}, {id: ` + idC + `, version: v1alpha1}]
   kinds: [{name: a}]
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idA + `, version: v2}
 spec:
-  dependencies: [` + uriD + `]
+  dependencies: [{id: ` + idD + `, version: v1alpha1}]
   kinds: [{name: b}]
 `),
-		uriC: []byte(`
-metadata: {id: ` + uriC + `}
+		refC: []byte(`
+metadata: {id: ` + idC + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriD + `]
+  dependencies: [{id: ` + idD + `, version: v1alpha1}]
   kinds: [{name: c}]
 `),
-		uriD: []byte(`
-metadata: {id: ` + uriD + `}
+		refD: []byte(`
+metadata: {id: ` + idD + `, version: v1alpha1}
 spec:
   kinds: [{name: d}]
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	if len(g.Extensions) != 4 {
 		t.Fatalf("expected 4 unique extensions, got %d: %v", len(g.Extensions), g.Extensions)
 	}
 }
 
 func TestResolve_BrokenReferenceFails(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: a}]
 `),
-		// uriB deliberately missing.
+		// idB deliberately missing.
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
-	_, err := r.Resolve(uriA)
+	_, err := r.Resolve(refA)
 	if err == nil {
 		t.Fatal("expected error for broken reference, got nil")
 	}
@@ -132,8 +144,8 @@ spec:
 	if !errors.As(err, &fetchErr) {
 		t.Fatalf("expected *FetchError, got %T: %v", err, err)
 	}
-	if fetchErr.URI != uriB {
-		t.Fatalf("expected fetch error for %s, got %s", uriB, fetchErr.URI)
+	if fetchErr.Reference != refB {
+		t.Fatalf("expected fetch error for %s, got %s", idB, fetchErr.Reference)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected error to wrap ErrNotFound, got %v", err)
@@ -141,20 +153,20 @@ spec:
 }
 
 func TestResolve_DirectCycleFails(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriA + `]
+  dependencies: [{id: ` + idA + `, version: v1alpha1}]
 `),
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
-	_, err := r.Resolve(uriA)
+	_, err := r.Resolve(refA)
 	if err == nil {
 		t.Fatal("expected cycle error, got nil")
 	}
@@ -165,77 +177,80 @@ spec:
 }
 
 func TestResolve_SelfCycleFails(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriA + `]
+  dependencies: [{id: ` + idA + `, version: v1alpha1}]
 `),
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
-	_, err := r.Resolve(uriA)
+	_, err := r.Resolve(refA)
 	var cycleErr *CycleError
 	if !errors.As(err, &cycleErr) {
 		t.Fatalf("expected *CycleError, got %T: %v", err, err)
 	}
 }
 
-func TestResolve_MismatchedMetadataIDFails(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriB + `}
-spec: {}
-`),
-	}
-	r := NewResolver(NewInMemoryLoader(docs))
-	_, err := r.Resolve(uriA)
-	if err == nil {
-		t.Fatal("expected error for mismatched metadata.id, got nil")
+func TestResolve_MismatchedMetadataFails(t *testing.T) {
+	for _, metadata := range []string{
+		"{id: " + idB + ", version: v1alpha1}",
+		"{id: " + idA + ", version: v2}",
+	} {
+		t.Run(metadata, func(t *testing.T) {
+			docs := map[ExtensionReference][]byte{
+				refA: []byte("metadata: " + metadata + "\nspec: {}\n"),
+			}
+			r := NewResolver(NewInMemoryLoader(docs))
+			if _, err := r.Resolve(refA); err == nil {
+				t.Fatal("expected error for mismatched metadata.id or metadata.version")
+			}
+		})
 	}
 }
 
-// A URI whose extension depends on a URI whose extension depends on a URI
-// whose extension depends on a URI, four levels deep, with no dependency
-// declared at each level but the one right below it - the resolver
+// An extension release that depends on another release, four levels deep,
+// with only the next release declared at each level - the resolver
 // shouldn't need to know the chain's depth up front.
 func TestResolve_FourLevelNestedChain(t *testing.T) {
-	uriD := "mem://d.extension.yaml"
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	idD := "mem://d.extension.yaml"
+	refD := ExtensionReference{ID: idD, Version: "v1alpha1"}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: kindA}]
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriC + `]
+  dependencies: [{id: ` + idC + `, version: v1alpha1}]
   kinds: [{name: kindB}]
 `),
-		uriC: []byte(`
-metadata: {id: ` + uriC + `}
+		refC: []byte(`
+metadata: {id: ` + idC + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriD + `]
+  dependencies: [{id: ` + idD + `, version: v1alpha1}]
   kinds: [{name: kindC}]
 `),
-		uriD: []byte(`
-metadata: {id: ` + uriD + `}
+		refD: []byte(`
+metadata: {id: ` + idD + `, version: v1alpha1}
 spec:
   kinds: [{name: kindD}]
 `),
 	}
 
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	if len(g.Extensions) != 4 {
 		t.Fatalf("expected 4 extensions, got %d: %v", len(g.Extensions), g.Extensions)
 	}
 
-	order := map[string]int{}
+	order := map[ExtensionReference]int{}
 	for i, ext := range g.Extensions {
-		order[ext.Metadata.ID] = i
+		order[ext.Metadata.Reference()] = i
 	}
-	if !(order[uriD] < order[uriC] && order[uriC] < order[uriB] && order[uriB] < order[uriA]) {
+	if !(order[refD] < order[refC] && order[refC] < order[refB] && order[refB] < order[refA]) {
 		t.Fatalf("expected topological order d,c,b,a; got order %v", order)
 	}
 

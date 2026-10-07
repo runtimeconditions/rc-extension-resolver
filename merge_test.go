@@ -6,21 +6,21 @@ import (
 )
 
 func TestMerge_DistinctKindsAcrossExtensions(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: widget}]
   interfaceTypes: [{name: http, targetKind: widget}]
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
   kinds: [{name: gadget}]
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	c, err := Merge(g)
 	if err != nil {
 		t.Fatalf("unexpected merge error: %v", err)
@@ -37,20 +37,20 @@ spec:
 }
 
 func TestMerge_AmbiguousKindIsAllowed(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: widget}]
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
   kinds: [{name: widget}]
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	c, err := Merge(g)
 	if err != nil {
 		t.Fatalf("unexpected merge error: %v", err)
@@ -61,21 +61,21 @@ spec:
 }
 
 func TestMerge_ConflictingInterfaceTypeDeclarationFails(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: widget}]
   interfaceTypes: [{name: http, targetKind: widget}]
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
   interfaceTypes: [{name: http, targetKind: widget}]
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	_, err := Merge(g)
 	var conflictErr *ConflictError
 	if !errors.As(err, &conflictErr) {
@@ -94,20 +94,20 @@ func TestMerge_ConflictingSchemaBindingFails(t *testing.T) {
       appliesToInterfaceType: http
       schema: {type: object}
 `
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
-  dependencies: [` + uriB + `]
+  dependencies: [{id: ` + idB + `, version: v1alpha1}]
   kinds: [{name: widget}]
   interfaceTypes: [{name: http, targetKind: widget}]
 ` + schemaDoc),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
 ` + schemaDoc),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	_, err := Merge(g)
 	var conflictErr *ConflictError
 	if !errors.As(err, &conflictErr) {

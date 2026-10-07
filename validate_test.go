@@ -7,9 +7,9 @@ import (
 
 func widgetCatalog(t *testing.T) *Catalog {
 	t.Helper()
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
   kinds: [{name: widget}]
   interfaceTypes: [{name: http, targetKind: widget}]
@@ -35,7 +35,7 @@ spec:
                 minLength: 1
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	c, err := Merge(g)
 	if err != nil {
 		t.Fatalf("unexpected merge error: %v", err)
@@ -107,9 +107,9 @@ func TestValidateCondition_UnknownInterfaceTypeIsError(t *testing.T) {
 // distinguished by interface type.
 func ambiguousKindCatalog(t *testing.T) *Catalog {
 	t.Helper()
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
   kinds: [{name: cache}]
   interfaceTypes: [{name: redis_protocol, targetKind: cache}]
@@ -119,23 +119,23 @@ spec:
       appliesToInterfaceType: redis_protocol
       schema: {type: object}
 `),
-		uriB: []byte(`
-metadata: {id: ` + uriB + `}
+		refB: []byte(`
+metadata: {id: ` + idB + `, version: v1alpha1}
 spec:
   kinds: [{name: cache}]
   interfaceTypes: [{name: memcached_protocol, targetKind: cache}]
 `),
 	}
-	// uriA and uriB are independent roots; mimic resolveAll's fan-out by
-	// resolving each and concatenating, uriA first.
-	ra := mustResolve(t, docs, uriA)
-	rb := mustResolve(t, docs, uriB)
-	g := &ResolvedGraph{ByID: map[string]*ExtensionDefinition{}}
+	// idA and idB are independent roots; mimic resolveAll's fan-out by
+	// resolving each and concatenating, idA first.
+	ra := mustResolve(t, docs, refA)
+	rb := mustResolve(t, docs, refB)
+	g := &ResolvedGraph{ByID: map[ExtensionReference]*ExtensionDefinition{}}
 	for _, ext := range append(ra.Extensions, rb.Extensions...) {
-		if _, ok := g.ByID[ext.Metadata.ID]; ok {
+		if _, ok := g.ByID[ext.Metadata.Reference()]; ok {
 			continue
 		}
-		g.ByID[ext.Metadata.ID] = ext
+		g.ByID[ext.Metadata.Reference()] = ext
 		g.Extensions = append(g.Extensions, ext)
 	}
 	c, err := Merge(g)
@@ -149,7 +149,7 @@ func TestValidateCondition_AmbiguousKindExplicitExtensionMatches(t *testing.T) {
 	c := ambiguousKindCatalog(t)
 	result, err := c.ValidateCondition(map[string]any{
 		"kind":      "cache",
-		"extension": uriA,
+		"extension": map[string]any{"id": idA, "version": refA.Version},
 		"interface": map[string]any{"type": "redis_protocol"},
 	})
 	if err != nil {
@@ -158,8 +158,8 @@ func TestValidateCondition_AmbiguousKindExplicitExtensionMatches(t *testing.T) {
 	if result.KindMatch != KindMatchExplicit {
 		t.Fatalf("expected explicit match, got %q", result.KindMatch)
 	}
-	if result.ResolvedExtension != uriA {
-		t.Fatalf("expected resolved extension %q, got %q", uriA, result.ResolvedExtension)
+	if result.ResolvedExtension != refA {
+		t.Fatalf("expected resolved extension %s, got %s", refA, result.ResolvedExtension)
 	}
 }
 
@@ -175,24 +175,28 @@ func TestValidateCondition_AmbiguousKindNoExtensionFallsBackToFirst(t *testing.T
 	if result.KindMatch != KindMatchFallback {
 		t.Fatalf("expected fallback match, got %q", result.KindMatch)
 	}
-	if result.ResolvedExtension != uriA {
-		t.Fatalf("expected fallback to first-resolved extension %q, got %q", uriA, result.ResolvedExtension)
+	if result.ResolvedExtension != refA {
+		t.Fatalf("expected fallback to first-resolved extension %s, got %s", refA, result.ResolvedExtension)
 	}
 }
 
 func TestValidateCondition_AmbiguousKindWrongExtensionIsError(t *testing.T) {
 	c := ambiguousKindCatalog(t)
-	_, err := c.ValidateCondition(map[string]any{
-		"kind":      "cache",
-		"extension": "mem://not-a-resolved-extension.yaml",
-		"interface": map[string]any{"type": "redis_protocol"},
-	})
-	if err == nil {
-		t.Fatal("expected error for extension that doesn't define this kind")
-	}
-	var mismatchErr *ExtensionMismatchError
-	if !errors.As(err, &mismatchErr) {
-		t.Fatalf("expected *ExtensionMismatchError, got %T: %v", err, err)
+	for _, reference := range []ExtensionReference{
+		{ID: "mem://not-a-resolved-extension.yaml", Version: refA.Version},
+		{ID: idA, Version: "v2"},
+	} {
+		t.Run(reference.String(), func(t *testing.T) {
+			_, err := c.ValidateCondition(map[string]any{
+				"kind":      "cache",
+				"extension": map[string]any{"id": reference.ID, "version": reference.Version},
+				"interface": map[string]any{"type": "redis_protocol"},
+			})
+			var mismatchErr *ExtensionMismatchError
+			if !errors.As(err, &mismatchErr) {
+				t.Fatalf("expected *ExtensionMismatchError, got %T: %v", err, err)
+			}
+		})
 	}
 }
 
@@ -214,9 +218,9 @@ func TestValidateCondition_UnambiguousKindHasNoMatchType(t *testing.T) {
 }
 
 func TestValidateCondition_UnresolvedSchemaRefIsError(t *testing.T) {
-	docs := map[string][]byte{
-		uriA: []byte(`
-metadata: {id: ` + uriA + `}
+	docs := map[ExtensionReference][]byte{
+		refA: []byte(`
+metadata: {id: ` + idA + `, version: v1alpha1}
 spec:
   kinds: [{name: widget}]
   interfaceTypes: [{name: http, targetKind: widget}]
@@ -229,7 +233,7 @@ spec:
         $ref: '#/$defs/nope'
 `),
 	}
-	g := mustResolve(t, docs, uriA)
+	g := mustResolve(t, docs, refA)
 	c, err := Merge(g)
 	if err != nil {
 		t.Fatalf("unexpected merge error: %v", err)

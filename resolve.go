@@ -26,68 +26,74 @@ func NewResolver(loader LoaderFunc) *Resolver {
 }
 
 // ResolvedGraph is every extension reachable from a root, deduplicated by
-// identifier URI, in dependency-first order.
+// exact (id, version) pair, in dependency-first order.
 type ResolvedGraph struct {
 	Extensions []*ExtensionDefinition
-	ByID       map[string]*ExtensionDefinition
+	ByID       map[ExtensionReference]*ExtensionDefinition
 }
 
-func (r *Resolver) Resolve(rootURI string) (*ResolvedGraph, error) {
-	g := &ResolvedGraph{ByID: make(map[string]*ExtensionDefinition)}
-	state := make(map[string]visitState)
+func (r *Resolver) Resolve(root ExtensionReference) (*ResolvedGraph, error) {
+	g := &ResolvedGraph{ByID: make(map[ExtensionReference]*ExtensionDefinition)}
+	state := make(map[ExtensionReference]visitState)
 
-	var visit func(uri string, path []string) error
-	visit = func(uri string, path []string) error {
-		switch state[uri] {
+	var visit func(ExtensionReference, []ExtensionReference) error
+	visit = func(reference ExtensionReference, path []ExtensionReference) error {
+		if !reference.Valid() {
+			return fmt.Errorf("extension reference requires non-empty string id and version")
+		}
+		switch state[reference] {
 		case visiting:
-			return &CycleError{Path: append(append([]string{}, path...), uri)}
+			return &CycleError{Path: append(append([]ExtensionReference{}, path...), reference)}
 		case visited:
 			return nil
 		}
-		state[uri] = visiting
+		state[reference] = visiting
 
-		ext, err := r.fetch(uri)
+		ext, err := r.fetch(reference)
 		if err != nil {
 			return err
 		}
-		if ext.Metadata.ID != "" && ext.Metadata.ID != uri {
-			return fmt.Errorf("fetch %s: document declares metadata.id %q, expected %q", uri, ext.Metadata.ID, uri)
+		if ext.Metadata.Reference() != reference {
+			return fmt.Errorf("fetch %s: document declares %s, expected the requested id and version", reference, ext.Metadata.Reference())
 		}
 
-		nextPath := append(append([]string{}, path...), uri)
+		nextPath := append(append([]ExtensionReference{}, path...), reference)
 		for _, dep := range ext.Spec.Dependencies {
 			if err := visit(dep, nextPath); err != nil {
 				return err
 			}
 		}
 
-		state[uri] = visited
-		g.ByID[uri] = ext
+		state[reference] = visited
+		g.ByID[reference] = ext
 		g.Extensions = append(g.Extensions, ext)
 		return nil
 	}
 
-	if err := visit(rootURI, nil); err != nil {
+	if err := visit(root, nil); err != nil {
 		return nil, err
 	}
 	return g, nil
 }
 
-func (r *Resolver) fetch(uri string) (*ExtensionDefinition, error) {
-	body, err := r.Loader(uri)
+func (r *Resolver) fetch(reference ExtensionReference) (*ExtensionDefinition, error) {
+	body, err := r.Loader(reference)
 	if err != nil {
-		return nil, &FetchError{URI: uri, Err: err}
+		return nil, &FetchError{Reference: reference, Err: err}
 	}
 	defer body.Close()
 
 	data, err := io.ReadAll(body)
 	if err != nil {
-		return nil, &FetchError{URI: uri, Err: err}
+		return nil, &FetchError{Reference: reference, Err: err}
 	}
 
 	var ext ExtensionDefinition
 	if err := yaml.Unmarshal(data, &ext); err != nil {
-		return nil, &FetchError{URI: uri, Err: fmt.Errorf("parsing document: %w", err)}
+		return nil, &FetchError{Reference: reference, Err: fmt.Errorf("parsing document: %w", err)}
+	}
+	if !ext.Metadata.Reference().Valid() {
+		return nil, &FetchError{Reference: reference, Err: fmt.Errorf("metadata.id and metadata.version are required non-empty strings")}
 	}
 	return &ext, nil
 }

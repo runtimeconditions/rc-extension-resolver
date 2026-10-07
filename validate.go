@@ -27,7 +27,7 @@ type ValidationResult struct {
 
 	// ResolvedExtension is the extension whose kind definition this
 	// Condition resolved against.
-	ResolvedExtension string
+	ResolvedExtension ExtensionReference
 	KindMatch         KindMatch
 }
 
@@ -36,7 +36,18 @@ func (c *Catalog) ValidateCondition(condition map[string]any) (*ValidationResult
 	if kind == "" {
 		return nil, fmt.Errorf("condition has no kind")
 	}
-	extension, _ := condition["extension"].(string)
+	var extension *ExtensionReference
+	if value, present := condition["extension"]; present {
+		fields, ok := value.(map[string]any)
+		if !ok || len(fields) != 2 {
+			return nil, fmt.Errorf("condition.extension requires exactly id and version")
+		}
+		reference, err := referenceFromFields(fields)
+		if err != nil {
+			return nil, fmt.Errorf("condition.extension: %w", err)
+		}
+		extension = &reference
+	}
 	iface, _ := condition["interface"].(map[string]any)
 	interfaceType, _ := iface["type"].(string)
 	if interfaceType == "" {
@@ -92,7 +103,7 @@ func (c *Catalog) compile(entry schemaEntry) (*jsonschema.Schema, error) {
 	compiler := jsonschema.NewCompiler()
 	schema, err := compiler.Compile(data, entry.def.ID)
 	if err != nil {
-		return nil, fmt.Errorf("compiling schema %q (from %s): %w", entry.def.ID, entry.ownerURI, err)
+		return nil, fmt.Errorf("compiling schema %q (from %s): %w", entry.def.ID, entry.owner, err)
 	}
 
 	c.compiled[entry.def.ID] = &compiledSchema{schema: schema}

@@ -9,7 +9,7 @@ of Conditions that use those extensions' kinds, interface types, and JSON
 Schemas. This library does three things:
 
 1. **Resolve** - fetch an extension and everything it depends on. Fails on
-   cycles or broken references.
+   cycles, broken references, or metadata that does not match the requested release.
 2. **Merge** - combine every resolved extension into one `Catalog`. Fails
    if two extensions define the same interface type or schema.
 3. **Validate** - check a Condition against the catalog: is its `kind`
@@ -22,16 +22,38 @@ Condition can still name an `extension` field to pick between two
 extensions that do collide on `kind` - but that's a fallback for a
 naming mistake, not something to design around.
 
-It doesn't care where an extension document lives - `LoaderFunc` is just
-`func(uri string) (io.ReadCloser, error)`, so HTTP, disk, or an in-memory
-map all work the same way.
+An extension release is identified by required, non-empty `id` and `version`
+strings, compared exactly as a pair. `metadata.uri` is not an accepted alias.
+IDs SHOULD use a resolver-supported format, such as an HTTPS or file URI or
+an OCI reference; URI syntax is not required. Versions are exact strings,
+not inferred from IDs, package versions, or version ranges.
+
+`LoaderFunc` is `func(reference ExtensionReference) (io.ReadCloser, error)`.
+HTTP loading retrieves `reference.ID`; custom loaders can use both fields to
+locate a release through disk, OCI, or a configured mapping. The resolver
+checks both metadata fields on the returned document. `NewInMemoryLoader`
+and `ResolvedGraph.ByID` use `ExtensionReference` keys, so different versions
+of the same ID remain distinct.
+
+Profile declarations, extension dependencies, and Condition `extension`
+selectors use objects containing exactly `id` and `version`:
+
+```yaml
+extensions:
+  - id: example.widgets
+    version: v1alpha1
+```
 
 ## Usage
 
 ```go
 loader := resolver.NewHTTPLoader(10 * time.Second)
 
-catalog, err := resolver.LoadAndMerge(loader, profile.Extensions[0])
+reference := resolver.ExtensionReference{
+    ID: "https://example.com/extensions/widgets.yaml",
+    Version: "v1alpha1",
+}
+catalog, err := resolver.LoadAndMerge(loader, reference)
 if err != nil {
     // resolution or merge failed
 }
